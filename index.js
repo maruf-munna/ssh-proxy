@@ -1,69 +1,76 @@
 const { Server } = require('ssh2');
-const httpProxy = require('http-proxy');
-const net = require('net');
+const { generateKeyPairSync } = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
-// SSH Server Configuration
-const sshServer = new Server({
-  hostKeys: [require('fs').readFileSync('ssh.key')]
-}, (client) => {
-  console.log('Client connected!');
+// Generate SSH key pair
+const keyDir = path.join(__dirname, 'keys');
+const privateKeyPath = path.join(keyDir, 'ssh_host_rsa_key');
+const publicKeyPath = path.join(keyDir, 'ssh_host_rsa_key.pub');
 
-  client.on('authentication', (ctx) => {
-    if (ctx.username === 'user' && ctx.password === 'password') {
-      ctx.accept();
-    } else {
-      ctx.reject();
-    }
-  }).on('ready', () => {
-    console.log('Client authenticated!');
+if (!fs.existsSync(keyDir)) {
+    fs.mkdirSync(keyDir);
+}
 
-    client.on('session', (accept) => {
-      const session = accept();
-      session.once('exec', (accept, reject, info) => {
-        console.log(`Client wants to execute: ${info.command}`);
-        const stream = accept();
-        stream.exit(0);
-        stream.end();
-      });
+if (!fs.existsSync(privateKeyPath) || !fs.existsSync(publicKeyPath)) {
+    console.log('Generating SSH key pair...');
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+        modulusLength: 2048,
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+        privateKeyEncoding: { type: 'pkcs1', format: 'pem' }
     });
-  }).on('end', () => {
-    console.log('Client disconnected');
-  });
+
+    fs.writeFileSync(privateKeyPath, privateKey);
+    fs.writeFileSync(publicKeyPath, publicKey);
+    console.log('SSH keys generated successfully.');
+}
+
+// Read private key for SSH server
+const privateKey = fs.readFileSync(privateKeyPath);
+
+// Start SSH server
+const server = new Server({
+    hostKeys: [privateKey]
+}, (client) => {
+    console.log('Client connected!');
+
+    client.on('authentication', (ctx) => {
+        if (ctx.method === 'password' && ctx.username === 'admin' && ctx.password === 'password') {
+            ctx.accept();
+        } else {
+            ctx.reject();
+        }
+    });
+
+    client.on('ready', () => {
+        console.log('Client authenticated!');
+        
+        client.on('session', (accept, reject) => {
+            const session = accept();
+            
+            session.on('pty', (accept, reject, info) => {
+                accept && accept();
+            });
+
+            session.on('shell', (accept, reject) => {
+                const stream = accept();
+                stream.write('Welcome to the Node.js SSH server!\n');
+                stream.on('data', (data) => {
+                    console.log('Client input:', data.toString());
+                    stream.write('You said: ' + data);
+                });
+                stream.on('close', () => {
+                    console.log('Client disconnected');
+                });
+            });
+        });
+    });
+
+    client.on('end', () => {
+        console.log('Client disconnected.');
+    });
 });
 
-// Start SSH Server
-sshServer.listen(2222, '0.0.0.0', () => {
-  console.log('SSH Server running on port 2222');
-});
-
-// HTTP Proxy Configuration
-const proxy = httpProxy.createProxyServer({});
-
-const server = net.createServer((socket) => {
-  socket.on('data', (chunk) => {
-    const data = chunk.toString();
-
-    if (data.includes('CONNECT')) {
-      const parts = data.split(' ');
-      const targetHostPort = parts[1].split(':');
-      const targetHost = targetHostPort[0];
-      const targetPort = targetHostPort[1] || 80;
-
-      const proxySocket = net.createConnection(targetPort, targetHost, () => {
-        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        proxySocket.pipe(socket);
-        socket.pipe(proxySocket);
-      });
-
-      proxySocket.on('error', (err) => {
-        console.error('Proxy Socket Error:', err);
-        socket.end();
-      });
-    }
-  });
-});
-
-// Start HTTP Proxy
-server.listen(8080, () => {
-  console.log('HTTP Proxy running on port 8080');
+server.listen(2222, '0.0.0.0', () => {
+    console.log('SSH Server running on port 2222');
 });
