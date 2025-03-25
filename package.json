@@ -1,0 +1,10 @@
+{
+  "name": "ssh-server-momar",
+  "main": "./index.js",
+  "author": {
+    "name": "Maruf"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0"
+  }
+}
